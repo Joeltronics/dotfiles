@@ -1,0 +1,206 @@
+#!/bin/bash
+
+# Run git rebase --autosquash, and then rebase any other branches to the new equivalent commits
+#
+# usage:
+#   git autosquash [refspec]
+#
+# NOTE - currently has some limitations:
+# - Only handles branches that are ancestors of current HEAD, not any other branches which may also need to be rebased
+# - If no refspec provided, default behavior will only go back as far as HEAD~20
+# - Does not distinguish between tracking branches and non-tracking
+# - Likely can't handle anything involving merge commits (haven't really tested this)
+# - Can leave a mess behind if rebasing fails
+
+
+# TODO: port this all to Python
+
+DEFAULT_MAX_COMMITS_BACK=20
+
+BRANCH_COLOR="\e[1;92m"
+ERROR_COLOR="\e[1;31m"
+DEBUG_COLOR="\e[0;94m"
+NC="\e[0;00m"
+
+DEBUG_PRINT=0
+DEBUG_FORCE_CONTINUE_ON_NO_CHANGE=0
+DEBUG_FORCE_CONTINUE_ON_ERROR=0
+
+function error()
+{
+	echo -e "${ERROR_COLOR}ERROR:${NC} $1" 1>&2
+	if [ "$DEBUG_FORCE_CONTINUE_ON_ERROR" == "0" ]; then
+		exit 1
+	fi
+}
+
+function debug()
+{
+	if [ "$DEBUG_PRINT" != "0" ]; then
+		echo -e "${DEBUG_COLOR}debug:${NC} $1"
+	fi
+}
+
+if ! [ -d ./.git ]; then
+	error "This does not appear to be a git repo"
+fi
+
+if [ $# -ge 1 ]; then
+	rebase_ref=$1
+else
+	# TODO: make default behavior smarter - go back and find recent commits with "fixup!" in the name, and what commit they would get squashed to
+
+	num_commits=$(git rev-list --count HEAD)
+	if [ $? -ne 0 ]; then
+		error "git rev-list failed!"
+	fi
+	num_commits_back=$(expr $num_commits - 1)
+	num_commits_back=$(( $num_commits_back > $DEFAULT_MAX_COMMITS_BACK ? $DEFAULT_MAX_COMMITS_BACK : $num_commits_back ))
+	rebase_ref=HEAD~$num_commits_back
+fi
+
+function find_equivalent_commit()
+{
+	local commit_ref=$1
+	local in_range=$2
+
+	readonly COMPARE_FORMAT="%s"
+
+	# Yes, this is very similar to what `git log --grep` does
+	# However, I haven't been able to figure out a solution using git log --grep that correctly handles multi-line commit messages
+	# (nor the case where one commit message is a superset of another, though that should be rare)
+
+	local commit_msg=$(git show -s --format=$COMPARE_FORMAT $commit_ref)
+	local all_hashes=$(git log $in_range --format="%H")
+	local found_hash=''
+	for this_hash in $all_hashes; do
+		local this_hash_commit_msg=$(git show -s --format=$COMPARE_FORMAT $this_hash)
+		if [ "$this_hash_commit_msg" == "$commit_msg" ]; then
+
+			if [ -n "$found_hash" ]; then
+				error "Found multiple matching hashes!"
+				return -1
+			fi
+
+			found_hash=$this_hash
+		fi
+	done
+
+	if [ -n "$found_hash" ]; then
+		echo $found_hash
+		return 0
+	else
+		error "Did not find hash matching commit message!"
+		return -1
+	fi
+}
+
+debug "git rev-parse HEAD"
+head_before=$(git rev-parse HEAD)
+if [ $? -ne 0 ] || [ -z "$head_before" ]; then
+	error "\"git rev-parse HEAD\" failed"
+fi
+
+debug "git rev-parse --abbrev-ref HEAD"
+curr_branch=$(git rev-parse --abbrev-ref HEAD)
+if [ $? -ne 0 ] || [ -z "$curr_branch" ]; then
+	error "\"git rev-parse --abbrev-ref HEAD\" failed"
+fi
+
+# If rebase_ref is something like HEAD~20 (which is the default), this reference will be a different commit after squashing, so get the actual hash
+debug "git rev-parse $rebase_ref"
+rebase_ref_parsed=$(git rev-parse $rebase_ref)
+if [ $? -ne 0 ] || [ -z "$rebase_ref_parsed" ]; then
+	error "\"git rev-parse $rebase_ref\" failed"
+fi
+
+echo -e "Current branch: ${BRANCH_COLOR}${curr_branch}${NC}"
+
+debug "git log --ancestry-path --pretty=%D --decorate --simplify-by-decoration --decorate-refs=refs/heads $rebase_ref..HEAD"
+branches_before="$(git log --ancestry-path --pretty=%D --decorate --simplify-by-decoration --decorate-refs=refs/heads $rebase_ref..HEAD | tr '\n' ' ')"
+echo "Branches that may need to be updated:"
+echo -e "${BRANCH_COLOR}${branches_before}${NC}"
+
+commit_count_before="$(git rev-list --count $rebase_ref_parsed..HEAD)"
+if [ $? -ne 0 ] || [ -z "$commit_count_before" ]; then
+	error "\git rev-list --count $rebase_ref_parsed..HEAD\" failed"
+fi
+
+echo "Running autosquash:"
+echo "git -c sequence.editor=: rebase -i --autosquash $rebase_ref"
+git -c sequence.editor=: rebase -i --autosquash $rebase_ref
+if [ $? -ne 0 ]; then
+	error "git rebase failed"
+fi
+
+head_after=$(git rev-parse HEAD)
+if [ $? -ne 0 ] || [ -z "$head_after" ]; then
+	error "\"git rev-parse HEAD\" failed"
+fi
+
+commit_count_after="$(git rev-list --count $rebase_ref_parsed..HEAD)"
+if [ $? -ne 0 ] || [ -z "$commit_count_after" ]; then
+	error "\git rev-list --count $rebase_ref_parsed..HEAD\" failed"
+fi
+
+num_commits_squashed=$(expr $commit_count_before - $commit_count_after)
+echo "$num_commits_squashed commit(s) squashed"
+
+
+if [ "$head_before" == "$head_after" ]; then
+	echo "HEAD did not change after rebase"
+	if [ "$DEBUG_FORCE_CONTINUE_ON_NO_CHANGE" == "0" ]; then
+		exit 0
+	fi
+fi
+
+debug "git log --ancestry-path --pretty=%D --decorate --simplify-by-decoration --decorate-refs=refs/heads $rebase_ref_parsed..HEAD"
+branches_after="$(git log --ancestry-path --pretty=%D --decorate --simplify-by-decoration --decorate-refs=refs/heads $rebase_ref_parsed..HEAD  | tr '\n' ' ')"
+debug "Branches that do not need to be updated: $branches_after"
+
+# If the order of branches changes then this check wouldn't work
+# This doesn't seem to be a problem - the order appears to be consistent
+if [ "$branches_before" == "$branches_after" ]; then
+	echo "No branches need update"
+	if [ "$DEBUG_FORCE_CONTINUE_ON_NO_CHANGE" == "0" ]; then
+		exit 0
+	fi
+fi
+
+# TODO: find all branches' equivalent commits first, then apply them after
+# This would leave less of a mess if something fails
+# (could even automatically undo git rebase command)
+
+# TODO: Distinguish between tracking branches and non-tracking,
+# and don't update if this would make branch no longer a descendent of remote
+# (possibly require --force argument to do this)
+
+echo "Updating other branches..."
+
+for branch in $branches_before; do
+
+	if [ -z "$(echo $branches_after | xargs -n1 echo | grep -e ^$branch$)" ]; then
+		# Need to update branch pointer to the new location
+
+		debug "find_equivalent_commit $branch $rebase_ref_parsed..HEAD"
+		equivalent_commit=$(find_equivalent_commit $branch $rebase_ref_parsed..HEAD)
+		if [ $? -ne 0 ] || [ -z "$equivalent_commit" ]; then
+			error "Failed to find hash for branch \"$branch\""
+		fi
+
+		echo -e "${BRANCH_COLOR}${branch}${NC} updating $(git rev-parse ${branch}) -> $equivalent_commit"
+		debug "git branch --force $branch $equivalent_commit"
+		git branch --force $branch $equivalent_commit
+		if [ $? -ne 0 ]; then
+			error "\"git branch --force $branch $equivalent_commit\" failed"
+		fi
+
+	elif [ $branch == $curr_branch ]; then
+		debug "${BRANCH_COLOR}${branch}${NC} this is the current branch - already updated by autosquash, no more update needed"
+	else
+		# Branch is not current, but is unchanged
+		debug "${BRANCH_COLOR}${branch}${NC} unchanged, no need to update"
+	fi
+done
+
+echo "Done"

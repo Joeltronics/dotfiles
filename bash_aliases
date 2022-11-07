@@ -32,23 +32,24 @@ function f() {
 # grep and related
 #
 
-# alternative to find | grep
-function findgrep() {
-	find -not -path "*/.hg/*" | grep "$@"
-}
-
 # Find & replace via sed
 function sedc() {
-	find \( \
-		-name '*.c' -o \
-		-name '*.cpp' -o \
-		-name '*.cc' -o \
-		-name '*.h' -o \
-		-name '*.hh' -o \
-		-name '*.hpp' -o \
-		-name '*.ipp' -o \
-		-name '*.inl'\
-		\) -not -path './build*' | xargs sed -i "$1"
+	if [ "$#" == 1 ]; then
+		find | grep -E '\.(h|hh|hpp|c|cc|cpp|inl)$' | grep -vE '/(\.git|\.hg|build|out|generated)/' | xargs sed -i "$1"
+	elif [ "$#" == 2 ]; then
+		find | grep -E '\.(h|hh|hpp|c|cc|cpp|inl)$' | grep -vE '/(\.git|\.hg|build|out|generated)/' | xargs sed -i "s/$1/$2/g"
+	else
+		echo "sedc - find & replace in source files"
+		echo ""
+		echo "Usage:"
+		echo "    sedc <FIND> <REPLACE>"
+		echo "    sedc <SED SCRIPT>"
+		echo ""
+		echo "Examples:"
+		echo "    sedc FOO BAR"
+		echo "    sedc 's/FOO/BAR/g'"
+		return 1
+	fi
 }
 
 # grep only C/C++ source & header files
@@ -69,19 +70,23 @@ function grepc() {
 
 # grep only C/C++ source & header files, but excluding files that have the search term in the filename
 function grepcx() {
+	if [ "$#" != 1 ]; then
+		echo "This call only takes 1 argument" >&2
+		return 1;
+	fi
 	echo "Header files:"
 	grep -nrsI \
 		--include={"*.h","*.hpp","*.hh","*.ipp"} \
-		--exclude="*$@*" \
+		--exclude="*$1*" \
 		--exclude-dir={.git,.hg,build,out,generated} \
-		"$@" .
+		"$1" .
 	echo ""
 	echo "Source files:"
 	grep -nrsI \
 		--include={"*.c","*.cpp","*.cc","*.inl"} \
-		--exclude="*$@*" \
+		--exclude="*$1*" \
 		--exclude-dir={.git,.hg,build,out,generated} \
-		"$@" .
+		"$1" .
 	echo ""
 }
 
@@ -103,11 +108,15 @@ function greph() {
 
 # grep only C/C++ header files, but excluding files that have the search term in the filename
 function grephx() {
+	if [ "$#" != 1 ]; then
+		echo "This call only takes 1 argument" >&2
+		return 1;
+	fi
 	grep -nrsI \
 		--include={"*.h","*.hpp","*.hh","*.ipp"} \
-		--exclude="*$@*" \
+		--exclude="*$1*" \
 		--exclude-dir={.git,.hg,build,out,generated} \
-		"$@" .
+		"$1" .
 }
 
 # grep only Makefiles, cmake files, kernel configs, and other similar
@@ -137,7 +146,7 @@ function grepweb() {
 	echo ""
 	echo "HTML files:"
 	grep -nrsI \
-		--include={"*.html","*.shtml","*.xhtml"} \
+		--include={"*.html","*.htm","*.shtml","*.xhtml"} \
 		--exclude-dir={.git,.hg,build,out,generated} \
 		"$@" .
 	echo ""
