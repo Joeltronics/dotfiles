@@ -4,7 +4,7 @@ ANY_ERRORS=0
 
 make_symlink()
 {
-	local TARGET=$1
+	local TARGET=$(realpath $1)
 	local LINK_LOCATION=$2
 
 	if ! [[ -f $TARGET ]]; then
