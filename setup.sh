@@ -13,6 +13,12 @@ make_symlink()
 		return 1
 	fi
 
+	local LINK_DIR=$(dirname $LINK_LOCATION)
+	if ! [[ -d $LINK_DIR ]]; then
+		echo "$LINK_DIR does not exist; creating"
+		mkdir -p $LINK_DIR
+	fi
+
 	local LN_FORCE=""
 
 	if [[ -L "$LINK_LOCATION" ]]; then
